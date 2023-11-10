@@ -107,7 +107,7 @@ describe('OrdersController', () => {
     it('should update an existing order', async () => {
       const updateOrderDto: UpdateOrderDto = new UpdateOrderDto();
       const result = {
-        orderProducts: [],
+        updatedOrderProducts: [],
         totalPrice: 10,
         orderCode: '',
         orderType: OrderType.Custom,

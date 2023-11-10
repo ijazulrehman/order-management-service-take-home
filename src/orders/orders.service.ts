@@ -1,17 +1,6 @@
-import {
-  Injectable,
-  HttpException,
-  HttpStatus,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  EntityManager,
-  getManager,
-  In,
-  Repository,
-  SelectQueryBuilder,
-} from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 import Order from './entities/order.entity';
 import CreateOrderDto from './dto/createOrder.dto';
 import UpdateOrderDto from './dto/updateOrder.dto';
@@ -127,6 +116,7 @@ export default class OrdersService {
   async createOrder(order: CreateOrderDto) {
     const { orderedProductIds, productQuantityKeyPair } =
       getOrderIdsAndQuantity(order.products);
+
     const foundProducts = await this.productsRepository.find({
       where: {
         id: In(orderedProductIds),
@@ -222,6 +212,8 @@ export default class OrdersService {
 
     // Product.quantity will be NewQuantity - OldQuantity
     // In case it is negative, it means add back to Product.quantity
+    // Previously user ordered 5 units of product, now he want 3
+    // so we will add 2 back to product quantity
     order.products.forEach((product) => {
       const previousOrderItem = foundOrder.orderProducts.find(
         (orderItem) => orderItem.product.id === product.productId,
