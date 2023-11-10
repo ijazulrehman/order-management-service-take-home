@@ -1,11 +1,6 @@
-import { OmitType, PartialType } from '@nestjs/swagger';
+import { OmitType } from '@nestjs/swagger';
 import CreateOrderDto from './createOrder.dto';
 
-export class UpdateOrderDto extends PartialType(
-  OmitType(CreateOrderDto, [
-    'products',
-    'orderCode',
-  ] as (keyof CreateOrderDto)[]),
-) {}
+class UpdateOrderDto extends OmitType(CreateOrderDto, ['orderCode']) {}
 
 export default UpdateOrderDto;

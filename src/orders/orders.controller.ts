@@ -15,7 +15,7 @@ import { PaginationDto } from './dto/pagination.dto';
 import { PaginatedOrdersResultDto } from './dto/paginatedOrdersResult.dto';
 import { FilteringDto } from './dto/filtering.dto';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
-import Product from 'src/products/product.entity';
+import Product from '../products/product.entity';
 
 @ApiTags('orders')
 @Controller('orders')

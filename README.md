@@ -6,10 +6,10 @@ This is a straightforward Order Management Service developed using Nest.js, a po
 
 ## Things to improve
 
-- [ ] Use transactions, especially for endpoints like creating orders.
-- [ ] Enhance the "Update Order" endpoint to accommodate updates in order products.
-- [ ] Improve test coverage.
-- [ ] Add missing DTO validation
+- [x] Use transactions, especially for endpoints like creating orders.
+- [x] Enhance the "Update Order" endpoint to accommodate updates in order products.
+- [x] Improve test coverage.
+- [x] Add missing DTO validation
 
 ## Getting Started
 
