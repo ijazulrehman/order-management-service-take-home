@@ -18,8 +18,12 @@ import UpdateOrderDto from './dto/updateOrder.dto';
 import { PaginationDto } from './dto/pagination.dto';
 import { PaginatedOrdersResultDto } from './dto/paginatedOrdersResult.dto';
 import { FilteringDto } from './dto/filtering.dto';
-import Product from 'src/products/product.entity';
+import Product from '../products/product.entity';
 import OrderProducts from './entities/order-products.entity';
+import {
+  checkForProductQuantityAvailability,
+  getOrderIdsAndQuantity,
+} from './orders.util';
 
 @Injectable()
 export default class OrdersService {
@@ -121,18 +125,111 @@ export default class OrdersService {
    * @returns
    */
   async createOrder(order: CreateOrderDto) {
-    const orderedProductIds = order.products.map(
-      (product) => product.productId,
+    const { orderedProductIds, productQuantityKeyPair } =
+      getOrderIdsAndQuantity(order.products);
+    const foundProducts = await this.productsRepository.find({
+      where: {
+        id: In(orderedProductIds),
+      },
+    });
+
+    await checkForProductQuantityAvailability(
+      foundProducts,
+      orderedProductIds,
+      productQuantityKeyPair,
     );
-    const productQuantityKeyPair = order.products.reduce((acc, item) => {
-      const { productId, quantity } = item;
-      if (acc[productId]) {
-        acc[productId] += quantity;
-      } else {
-        acc[productId] = quantity;
+
+    let totalPrice = 0;
+
+    const queryRunner =
+      this.productsRepository.manager.connection.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      for (const product of foundProducts) {
+        this.productsRepository.merge(product, {
+          quantity: product.quantity - productQuantityKeyPair[product.id],
+        });
+        await queryRunner.manager.save(Product, product);
+
+        totalPrice =
+          totalPrice + productQuantityKeyPair[product.id] * product.price;
       }
-      return acc;
-    }, {});
+
+      const newOrder: Order = await queryRunner.manager.save(Order, {
+        ...order,
+        totalPrice,
+      });
+
+      const newOrderProducts = order.products.map((product) =>
+        queryRunner.manager.create(OrderProducts, {
+          order: { id: newOrder.id },
+          product: { id: product.productId },
+          quantity: product.quantity,
+        }),
+      );
+
+      const savedOrderProducts = await queryRunner.manager.save(
+        OrderProducts,
+        newOrderProducts,
+      );
+      await queryRunner.commitTransaction();
+
+      return {
+        ...newOrder,
+        orderProducts: savedOrderProducts,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * TODO: add support for product quantity
+   * It is updating the quantity in OrderProducts and Products table
+   * Right now, adding new product to order is not supported
+   * @param id
+   * @param order
+   */
+  async updateOrder(id: number, order: UpdateOrderDto) {
+    const foundOrder = await this.ordersRepository.findOne({
+      where: {
+        id,
+      },
+      relations: ['orderProducts', 'orderProducts.product'],
+    });
+
+    if (!foundOrder) {
+      throw new HttpException('Order not found', HttpStatus.NOT_FOUND);
+    }
+
+    // For current implementation, we are not allowing to add more products in order
+    // Filtering out any product which do not exists already in order
+    order.products =
+      order.products?.filter((product) =>
+        foundOrder.orderProducts.some(
+          (op) => op.product.id === product.productId,
+        ),
+      ) ?? [];
+
+    const { orderedProductIds, productQuantityKeyPair } =
+      getOrderIdsAndQuantity(order.products);
+
+    // Product.quantity will be NewQuantity - OldQuantity
+    // In case it is negative, it means add back to Product.quantity
+    order.products.forEach((product) => {
+      const previousOrderItem = foundOrder.orderProducts.find(
+        (orderItem) => orderItem.product.id === product.productId,
+      );
+      if (previousOrderItem) {
+        productQuantityKeyPair[product.productId] -= previousOrderItem.quantity;
+      }
+    });
 
     const foundProducts = await this.productsRepository.find({
       where: {
@@ -140,81 +237,58 @@ export default class OrdersService {
       },
     });
 
-    const productAvailablityError: {
-      id: number;
-      availableQuantity?: number;
-      message: string;
-    }[] = [];
-
-    const foundProductsIds = foundProducts.map((product) => product.id);
-
-    orderedProductIds.forEach((productId) => {
-      if (!foundProductsIds.includes(productId))
-        productAvailablityError.push({
-          id: productId,
-          message: 'Product not found!',
-        });
-    });
-
-    foundProducts.forEach((product) => {
-      const { quantity: availableQuantity, id } = product;
-      if (availableQuantity < productQuantityKeyPair[id]) {
-        productAvailablityError.push({
-          id,
-          availableQuantity,
-          message: 'Insufficient Product Availability',
-        });
-      }
-    });
-
-    if (productAvailablityError.length > 0)
-      throw new UnprocessableEntityException(productAvailablityError);
+    await checkForProductQuantityAvailability(
+      foundProducts,
+      orderedProductIds,
+      productQuantityKeyPair,
+    );
 
     let totalPrice = 0;
 
-    for (const product of foundProducts) {
-      this.productsRepository.merge(product, {
-        quantity: product.quantity - productQuantityKeyPair[product.id],
+    const queryRunner =
+      this.productsRepository.manager.connection.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      for (const product of foundProducts) {
+        await queryRunner.manager.save(Product, {
+          ...(product as Product),
+          quantity: product.quantity - productQuantityKeyPair[product.id],
+        });
+        totalPrice += productQuantityKeyPair[product.id] * product.price;
+      }
+
+      const newOrderProducts = order.products.map((product) => {
+        const previousOrderItem = foundOrder.orderProducts.find(
+          (orderItem) => orderItem.product.id === product.productId,
+        );
+
+        return queryRunner.manager.save(OrderProducts, {
+          id: previousOrderItem?.id,
+          quantity: product.quantity,
+        });
       });
-      this.productsRepository.save(product);
-      totalPrice =
-        totalPrice + productQuantityKeyPair[product.id] * product.price;
+
+      const savedOrderProducts = await Promise.all(newOrderProducts);
+
+      const updatedOrder = { ...order, totalPrice };
+      delete updatedOrder.products;
+      await queryRunner.manager.update(Order, id, updatedOrder);
+
+      await queryRunner.commitTransaction();
+
+      return {
+        ...updatedOrder,
+        updatedOrderProducts: savedOrderProducts,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
-
-    const newOrder = await this.ordersRepository.save({
-      ...order,
-      totalPrice,
-    });
-
-    const newOrderProducts = order.products.map((product) =>
-      this.orderProductsRepository.create({
-        order: { id: newOrder.id },
-        product: { id: product.productId },
-        quantity: product.quantity,
-      }),
-    );
-
-    return {
-      ...newOrder,
-      orderProducts: await this.orderProductsRepository.save(newOrderProducts),
-    };
-  }
-
-  /**
-   * TODO: add support for product quantity
-   *
-   * @param id
-   * @param order
-   */
-  async updateOrder(id: number, order: UpdateOrderDto) {
-    await this.ordersRepository.update(id, order);
-    const updatedOrder = await this.ordersRepository.findOne({
-      where: { id },
-    });
-    if (updatedOrder) {
-      return updatedOrder;
-    }
-    throw new HttpException('Order not found', HttpStatus.NOT_FOUND);
   }
 
   async deleteOrder(id: number) {
